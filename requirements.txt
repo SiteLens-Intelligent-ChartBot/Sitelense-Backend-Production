@@ -4,4 +4,3 @@ pymongo
 sentence-transformers
 scikit-learn
 numpy
-google-generativeai
