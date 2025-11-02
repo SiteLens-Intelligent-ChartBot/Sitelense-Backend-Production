@@ -3,8 +3,9 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import HashingVectorizer
 from pymongo import MongoClient
-import time, gc
+import gc
 
 # -----------------------------
 # MongoDB Atlas Setup
@@ -18,31 +19,45 @@ db = client[DB_NAME]
 collection = db[COLLECTION_NAME]
 
 # -----------------------------
-# Lightweight model loader
+# Lightweight embedding model
 # -----------------------------
-def get_temp_model():
-    """Load MiniLM only when needed, free after use."""
-    from sentence_transformers import SentenceTransformer
-    return SentenceTransformer("paraphrase-MiniLM-L3-v2")
+_vectorizer = HashingVectorizer(
+    n_features=256,       # Small memory footprint (adjust if needed)
+    alternate_sign=False,
+    norm="l2",
+)
+_vectorizer.fit(["init"])  # Initialize once
+
+
+def embed_text(text: str):
+    """Generate lightweight embedding using HashingVectorizer."""
+    vec = _vectorizer.transform([text])
+    return vec.toarray()[0].astype(np.float16)
+
 
 # -----------------------------
-# Core Functions (Low RAM)
+# Core Functions
 # -----------------------------
 def answer_question(query: str) -> str:
-    """Compute embedding, stream through Mongo docs, free model."""
-    docs = collection.find({}, {"_id": 0, "text": 1, "embedding": 1})
-    if collection.count_documents({}) == 0:
+    """Return best-matching text using lightweight embeddings."""
+    if collection.estimated_document_count() == 0:
         return "No knowledge available yet. Please add statements first."
 
-    # Load model only here
-    model = get_temp_model()
-    query_emb = model.encode([query])[0].astype(np.float16)
-    del model
-    gc.collect()
+    docs = collection.find({}, {"_id": 0, "text": 1, "embedding": 1})
+    query_emb = embed_text(query)
 
     best_doc, best_score = None, -1.0
+
     for doc in docs:
-        emb = np.array(doc["embedding"], dtype=np.float16)
+        emb = np.array(doc.get("embedding", []), dtype=np.float16)
+
+        # ✅ Skip mismatched or invalid embeddings
+        if emb.shape[0] != query_emb.shape[0]:
+            continue
+
+        if np.linalg.norm(query_emb) == 0 or np.linalg.norm(emb) == 0:
+            continue
+
         sim = float(cosine_similarity([query_emb], [emb])[0][0])
         if sim > best_score:
             best_score, best_doc = sim, doc
@@ -50,19 +65,16 @@ def answer_question(query: str) -> str:
     del query_emb
     gc.collect()
 
-    if best_doc and best_score >= 0.4:
+    if best_doc and best_score >= 0.3:
         return best_doc["text"]
     return "I don't know the answer to that yet."
 
 
 def add_statement(text: str):
-    """Encode and insert one new statement (auto memory cleanup)."""
-    model = get_temp_model()
-    emb = model.encode([text])[0].astype(np.float16).tolist()
-    del model
-    gc.collect()
-
+    """Insert a new statement and store its hashed embedding."""
+    emb = embed_text(text).tolist()
     collection.insert_one({"text": text, "embedding": emb})
+    gc.collect()
     print("✅ Added new statement.")
 
 
@@ -77,6 +89,6 @@ def delete_statement(text: str):
 
 
 def list_statements():
-    """Return all stored texts (no embeddings)."""
+    """Return all stored statements in reverse order."""
     docs = collection.find({}, {"_id": 0, "text": 1}).sort([("_id", -1)])
     return [d["text"] for d in docs]
