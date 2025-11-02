@@ -1,0 +1,6 @@
+fastapi
+sentence-transformers
+scikit-learn
+numpy
+pymongo[srv]
+google-genai
