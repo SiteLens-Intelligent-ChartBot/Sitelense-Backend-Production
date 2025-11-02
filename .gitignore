@@ -1,0 +1,9 @@
+    # Ignore environment variables file
+    .env
+
+    # Ignore Python bytecode cache directories
+    __pycache__/
+
+    # Optionally, ignore virtual environment directory if it's within the project
+    # env/
+    # venv/
